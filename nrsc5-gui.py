@@ -52,7 +52,7 @@ class NRSC5_GUI(object):
         self.nrsc5Args      = []        # arguments for nrsc5
         self.logFile        = None      # nrsc5 log file
         self.lastImage      = ""        # last image file displayed
-        self.lastXHDR       = ""        # the last XHDR data received
+        self.lastXHDR       = ["", -1]  # the last XHDR data received
         self.stationStr     = ""        # current station frequency (string)
         self.streamNum      = 0         # current station stream number
         self.bookmarks      = []        # station bookmarks
@@ -62,6 +62,12 @@ class NRSC5_GUI(object):
         self.weatherMaps    = []        # list of current weathermaps sorted by time
         self.waittime       = 10        # time in seconds to wait for file to exist
         self.waitdivider    = 4         # check this many times per second for file
+        self.pixbuf         = None      # store image buffer for rescaling on resize
+        self.mimeTypes      = {         # as defined by iHeartRadio anyway, defined here for possible future use
+            "4F328CA0":["image/png","png"],
+            "1E653E9C":["image/jpg","jpg"],
+            "BB492AAC":["text/plain","txt"]
+        }
         self.mapData        = {
             "mapMode"       : 1,
             "mapTiles"      : [[0,0,0],[0,0,0],[0,0,0]],
@@ -79,7 +85,9 @@ class NRSC5_GUI(object):
                 "animationSpeed" : 0.5
             }
         }
-        
+
+
+
         # setup bookmarks listview
         nameRenderer = gtk.CellRendererText()
         nameRenderer.set_property("editable", True)
@@ -87,7 +95,7 @@ class NRSC5_GUI(object):
         
         colStation = gtk.TreeViewColumn("Station", gtk.CellRendererText(), text=0)
         colName    = gtk.TreeViewColumn("Name", nameRenderer, text=1)
-        
+
         colStation.set_resizable(True)
         colStation.set_sort_column_id(2)
         colName.set_resizable(True)
@@ -105,23 +113,36 @@ class NRSC5_GUI(object):
             re.compile("^.*main\.c:[\d]+: Title: (.*)$"),                                                         #  4 match title
             re.compile("^.*main\.c:[\d]+: Artist: (.*)$"),                                                        #  5 match artist
             re.compile("^.*main\.c:[\d]+: Album: (.*)$"),                                                         #  6 match album
-            re.compile("^.*output\.c:[\d]+: File (.*\.(?:jpg|png|txt)),.*port ([0-9a-fA-F]+).*$"),               #  7 match file (album art, maps, weather info)
+            re.compile("^.*main\.c:[\d]+: LOT file: port=([\d]+) lot=([\d]+) name=(.*\.(?:jpg|png|txt)) size=([\d]+) mime=([\w]+)$"),               #  7 match file (album art, maps, weather info)
             re.compile("^.*main\.c:[\d]+: MER: (-?[\d]+\.[\d]+) dB \(lower\), (-?[\d]+\.[\d]+) dB \(upper\)$"),     #  8 match MER
             re.compile("^.*main\.c:[\d]+: BER: (0\.[\d]+), avg: (0\.[\d]+), min: (0\.[\d]+), max: (0\.[\d]+)$"),  #  9 match BER
             re.compile("^.*nrsc5\.c:[\d]+: Best gain: (.*) dB,.*$"),                                                       # 10 match gain
             re.compile("^.*main\.c:[\d]+: SIG Service: type=(.*) number=(.*) name=(.*)$"), # 11 match stream
             re.compile("^.*main\.c:[\d]+: .*Data component:.* port=([\d]+).* type=([\d]+) .*$"),                     # 12 match port
-            re.compile("^.*main\.c:[\d]+: XHDR: .* ([0-9A-Fa-f]{8}) .*$"),                                 # 13 match xhdr tag
+            re.compile("^.*main\.c:[\d]+: XHDR: .* ([0-9A-Fa-f]{8}) (.*)$"),                                 # 13 match xhdr tag
             re.compile("^.*main\.c:[\d]+: Unique file identifier: PPC;07; ([\S]+).*$")                            # 14 match unique file id
         ]
         
         self.loadSettings()
         self.proccessWeatherMaps()
+        #self..connect('check-resize',self.on_window_resized) # TODO: fix on resize infinite loop
+
+    def handle_window_resize(self):
+        if (self.pixbuf != None):
+            allocation = self.imgCover.get_allocation()
+            desired_width = allocation.width / 2
+            desired_height = desired_width
+            self.pixbuf = self.pixbuf.scale_simple(desired_width, desired_height, gtk.gdk.INTERP_HYPER)
+            self.imgCover.set_from_pixbuf(self.pixbuf)
+
+    def on_window_resized(self,window):
+        self.handle_window_resize()
+
 
     def on_btnPlay_clicked(self, btn):
         # start playback
         if (not self.playing):
-            
+
             self.nrsc5Args = [nrsc5Path, "-o", "-"]
             
             # update all of the spin buttons to prevent the text from sticking 
@@ -170,7 +191,7 @@ class NRSC5_GUI(object):
             self.btnStop.set_sensitive(True)
             self.cbAutoGain.set_sensitive(False)
             self.playing = True
-            self.lastXHDR = ""
+            self.lastXHDR = ["", -1]
             
             # start the player thread
             self.playerThread = Thread(target=self.play)
@@ -184,9 +205,8 @@ class NRSC5_GUI(object):
                 logo = os.path.join(self.aasDir, self.stationLogos[self.stationStr][self.stationNum])
                 if (os.path.isfile(logo)):
                     self.streamInfo["Logo"] = self.stationLogos[self.stationStr][self.stationNum]
-                    pixbuf = gtk.gdk.pixbuf_new_from_file(logo)
-                    pixbuf = pixbuf.scale_simple(200, 200, gtk.gdk.INTERP_HYPER)
-                    self.imgCover.set_from_pixbuf(pixbuf)
+                    self.pixbuf = gtk.gdk.pixbuf_new_from_file(logo)
+                    self.handle_window_resize()
             else:
                 # add entry in database for the station if it doesn't exist
                 self.stationLogos[self.stationStr] = ["", "", "", ""]
@@ -484,12 +504,13 @@ class NRSC5_GUI(object):
                     self.spinGain.set_value(self.streamInfo["Gain"])
                     self.lblGain.set_label("{:2.1f}dB".format(self.streamInfo["Gain"]))
                 
-                # from what I can tell, album art is displayed if the XHDR packet is 8 bytes long
-                # and the station logo is displayed if it's 6 bytes long
-                if (len(self.lastXHDR) == 8 and self.streamInfo["Cover"] != None):
+                # second param is lot id, if -1, show cover, otherwise show cover
+                # technically we should show the file with the matching lot id
+
+                if (int(self.lastXHDR[1]) > 0 and self.streamInfo["Cover"] != None):
                     imagePath = os.path.join(self.aasDir, self.streamInfo["Cover"])
                     image = self.streamInfo["Cover"]
-                elif (len(self.lastXHDR) == 6 or self.streamInfo["Cover"] == None):
+                elif (int(self.lastXHDR[1]) < 0 or self.streamInfo["Cover"] == None):
                     imagePath = os.path.join(self.aasDir, self.streamInfo["Logo"])
                     image = self.streamInfo["Logo"]
                     if (not os.path.isfile(imagePath)):
@@ -498,10 +519,8 @@ class NRSC5_GUI(object):
                 # resize and display image if it changed and exists
                 if (self.xhdrChanged and self.lastImage != image and os.path.isfile(imagePath)):
                     self.xhdrChanged = False
-                    self.lastImage = image
-                    pixbuf = gtk.gdk.pixbuf_new_from_file(imagePath)
-                    pixbuf = pixbuf.scale_simple(200, 200, gtk.gdk.INTERP_HYPER)
-                    self.imgCover.set_from_pixbuf(pixbuf)
+                    self.pixbuf = gtk.gdk.pixbuf_new_from_file(imagePath)
+                    self.handle_window_resize()
                     self.debugLog("Image Changed")
             finally:
                 gtk.threads_leave()        
@@ -512,7 +531,7 @@ class NRSC5_GUI(object):
             self.statusTimer.start()
     
     def processTrafficMap(self, fileName):
-        r = re.compile("^TMT_.*_([1-3])_([1-3])_([\d]{4})([\d]{2})([\d]{2})_([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})_([0-9A-Fa-f]{4})\..*$")     # match file name
+        r = re.compile("^[\d]+_TMT_.*_([1-3])_([1-3])_([\d]{4})([\d]{2})([\d]{2})_([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})_([0-9A-Fa-f]{4})\..*$")     # match file name
         m = r.match(fileName)
         
         if (m):
@@ -538,16 +557,7 @@ class NRSC5_GUI(object):
             self.mapData["mapTiles"][x][y] = ts                                                         # store time for current tile
             
             try:
-                realFile = "{}_{}".format(int(m.group(8),16),fileName)
-                currentPath = os.path.join(self.aasDir,realFile)
-                count = 0
-                while (os.path.isfile(currentPath) == False and count < (self.waittime * self.waitdivider)):
-                    count += 1
-                    time.sleep(float(self.waittime) / self.waitdivider)
-
-                if (count >= 1):
-                    self.debugLog("Had to wait {0:.2f}s for nrsc5 to actually write data".format(float(count) / self.waitdivider))
-
+                currentPath = os.path.join(self.aasDir,fileName)
                 newPath = os.path.join(self.mapDir, "TrafficMap_{:g}_{:g}.png".format(x,y))                   # create path to new tile location
                 if(os.path.exists(newPath)): os.remove(newPath)                                         # delete old image if it exists (only necessary on windows)
                 shutil.move(currentPath, newPath)                                                       # move and rename map tile
@@ -578,7 +588,7 @@ class NRSC5_GUI(object):
                 if (self.mapViewer is not None): self.mapViewer.updated(0)                              # notify map viwerer if it's open
     
     def processWeatherOverlay(self, fileName):
-        r = re.compile("^DWRO_(.*)_.*_([\d]{4})([\d]{2})([\d]{2})_([\d]{2})([\d]{2})_([0-9A-Fa-f]+)\..*$")                    # match file name
+        r = re.compile("^[\d]+_DWRO_(.*)_.*_([\d]{4})([\d]{2})([\d]{2})_([\d]{2})([\d]{2})_([0-9A-Fa-f]+)\..*$")                    # match file name
         m = r.match(fileName)
         
         if (m):
@@ -611,16 +621,7 @@ class NRSC5_GUI(object):
             # move new overlay to map directory
             try:
                 if(os.path.exists(wxOlPath)): os.remove(wxOlPath)                                       # delete old image if it exists (only necessary on windows)
-                realFile = "{}_{}".format(int(m.group(7), 16),fileName);
-                count = 0
-                while (os.path.isfile(os.path.join(self.aasDir, realFile)) == False and count < (self.waittime * self.waitdivider)):
-                    count += 1
-                    time.sleep(float(self.waittime) / self.waitdivider)
-
-                if (count >= 1):
-                    self.debugLog("Had to wait {0:.2f}s for nrsc5 to actually write data".format(float(count) / self.waitdivider))
-
-                shutil.move(os.path.join(self.aasDir, realFile), wxOlPath)                                    # move and rename map tile
+                shutil.move(os.path.join(self.aasDir, fileName), wxOlPath)                                    # move and rename map tile
             except:
                 self.debugLog("Error moving weather overlay", True)
                 self.mapData["weatherTime"] = 0
@@ -657,22 +658,9 @@ class NRSC5_GUI(object):
     def proccessWeatherInfo(self, fileName):
         weatherID = None
         weatherPos = None
-        r = re.compile("^DWRI.*_([\d]+)$")  # match file name
-        n = r.match(os.path.splitext(fileName)[0])
-
-        if n:
-            realFile = "{}_{}".format(int(n.group(1), 16),fileName);
 
         try:
-            count = 0;
-            while (os.path.isfile(os.path.join(self.aasDir, realFile)) == False and count < (self.waittime * self.waitdivider)):
-                count += 1;
-                time.sleep(float(self.waittime) / self.waitdivider)
-
-            if (count >= 1):
-                self.debugLog("Had to wait {0:.2f}s for nrsc5 to actually write data".format(float(count) / self.waitdivider))
-
-            with open(os.path.join(self.aasDir, realFile)) as weatherInfo:                              # open weather info file
+            with open(os.path.join(self.aasDir, fileName)) as weatherInfo:                              # open weather info file
                 for line in weatherInfo:                                                                # read line by line
                     if ("DWR_Area_ID=" in line):                                                        # look for line with "DWR_Area_ID=" in it
                         # get ID from line
@@ -803,55 +791,45 @@ class NRSC5_GUI(object):
         elif (self.regex[13].match(line)):
             # match xhdr
             m = self.regex[13].match(line)
-            xhdr = m.group(1)
+            xhdr = [m.group(1),m.group(2)]
             if (xhdr != self.lastXHDR):
                 self.lastXHDR = xhdr
                 self.xhdrChanged = True
-                self.debugLog("XHDR Changed: {:s}".format(xhdr))
+                self.debugLog("XHDR Changed: {:s} (lot {:s})".format(xhdr[0],xhdr[1]))
         elif (self.regex[7].match(line)):
             # match album art
             m = self.regex[7].match(line)
             if (m):
-                fileName = m.group(1)
-                fileExt  = os.path.splitext(fileName)[1]
-                p = int(m.group(2), 16)
-                
+                fileName = "{}_{}".format(m.group(2),m.group(3))
+                fileSize = int(m.group(4))
+                headerOffset = int(len(m.group(2))) + 1
+
+                p = int(m.group(1),16)
+
+                # check file existance and size .. right now we just debug log
+                if (not os.path.isfile(os.path.join(self.aasDir,fileName))):
+                    self.debugLog("Missing file: " + fileName)
+                else:
+                    actualFileSize = os.path.getsize(os.path.join(self.aasDir,fileName))
+                    if (fileSize != actualFileSize):
+                        self.debugLog("Corrupt file: " + fileName + " (expected: "+fileSize+" bytes, got "+actualFileSize+" bytes)")
+
+                tmp = self.streams[int(self.spinStream.get_value()-1)][0]
+
                 if (p == self.streams[int(self.spinStream.get_value()-1)][0]):
-                    r = re.compile("^[\w]{6}(.*)$")  # match file name
-                    n = r.match(os.path.splitext(fileName)[0])
-                    if (n):
-                        realFile = "{}_{}".format(int(n.group(1), 16), m.group(1))
-                        count = 0;
-                        while (os.path.isfile(os.path.join(self.aasDir, realFile)) == False and count < (self.waittime * self.waitdivider)):
-                            count += 1
-                            time.sleep(float(self.waittime) / self.waitdivider)
-
-                        if (count >= 1):
-                            self.debugLog("Had to wait {0:.2f}s for nrsc5 to actually write data".format(float(count) / self.waitdivider))
-
-                        self.streamInfo["Cover"] = realFile
-                        self.debugLog("Got Album Cover: " + realFile)
+                    self.streamInfo["Cover"] = fileName
+                    self.debugLog("Got Album Cover: " + fileName)
                 elif (p == self.streams[int(self.spinStream.get_value()-1)][1]):
-                    r = re.compile("^.*\$.*$")  # match file name
-                    n = r.match(os.path.splitext(fileName)[0])
-                    if (n):
-                        # cannot currently accurately predict station logo filename, so glob the latest.
-                        globfiles = glob.iglob(self.aasDir + os.path.sep + '*' + fileName)
-                        if (globfiles):
-                            try:
-                                realFile = os.path.split(min(globfiles, key=os.path.getctime))[1]
-                                self.streamInfo["Logo"] = realFile
-                                self.stationLogos[self.stationStr][self.stationNum] = realFile    # add station logo to database
-                                self.debugLog("Got Station Logo: " + fileName)
-                            except:
-                                self.debugLog("Error finding Station Logo: "+ fileName, True)
+                    self.streamInfo["Logo"] = fileName
+                    self.stationLogos[self.stationStr][self.stationNum] = fileName    # add station logo to database
+                    self.debugLog("Got Station Logo: " + fileName)
 
-                elif(fileName[0:5] == "DWRO_" and self.mapDir is not None):
-                    self.processWeatherOverlay(m.group(1))
-                elif(fileName[0:4] == "TMT_" and self.mapDir is not None):
-                    self.processTrafficMap(m.group(1))                                  # proccess traffic map tile
-                elif(fileName[0:5] == "DWRI_" and self.mapDir is not None):
-                    self.proccessWeatherInfo(m.group(1))
+                elif(fileName[headerOffset:(5+headerOffset)] == "DWRO_" and self.mapDir is not None):
+                    self.processWeatherOverlay(fileName)
+                elif(fileName[headerOffset:(4+headerOffset)] == "TMT_" and self.mapDir is not None):
+                    self.processTrafficMap(fileName)                                  # proccess traffic map tile
+                elif(fileName[headerOffset:(5+headerOffset)] == "DWRI_" and self.mapDir is not None):
+                    self.proccessWeatherInfo(fileName)
 
         elif (self.regex[0].match(line)):
             # match station name
@@ -1285,4 +1263,5 @@ if __name__ == "__main__":
     nrsc5_gui.mainWindow.show()
     if (debugMessages and debugAutoStart):
         nrsc5_gui.on_btnPlay_clicked(nrsc5_gui)
+
     gtk.main()
