@@ -130,7 +130,7 @@ class NRSC5_GUI(object):
     def handle_window_resize(self):
         if (self.pixbuf != None):
             allocation = self.imgCover.get_allocation()
-            desired_width = allocation.width / 2
+            desired_width = int(allocation.width / 2.5)
             desired_height = desired_width
             self.pixbuf = self.pixbuf.scale_simple(desired_width, desired_height, gtk.gdk.INTERP_HYPER)
             self.imgCover.set_from_pixbuf(self.pixbuf)
