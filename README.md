@@ -38,6 +38,18 @@ store weather & traffic maps in.
 nrsc5 and mpv should be installed in a directory that is in your `$PATH` environmental variable.  
 Otherwise you can edit lines 27 & 28 of nrsc5-gui.py to provide a full path to nrsc5 and mpv.  
 
+## Windows Binary
+The script can be run on windows if the environment is set up correctly. To make this easier, a 
+binary package is provided. Please check the releases tab.
+
+Caveats with the Windows binary release:
+* No debug messages
+* GTK theme(s) may not display correctly
+* Cannot adjust output audio device (uses default)
+* No audio output volume control (use Windows mixer)
+* Will spawn blank command prompt window while running radio (exe only)
+* May crash without warning
+ 
 ## Usage
 Open the Settings tab and enter the frequency in MHz of the station you want to play.  
 Select the stream (1 is the main stream, some stations have additional streams).  

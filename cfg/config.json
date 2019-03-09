@@ -1,0 +1,59 @@
+{
+  "MapData": {
+    "viewerConfig": {
+      "scale": true, 
+      "windowSize": [
+        764, 
+        632
+      ], 
+      "mode": 1, 
+      "animate": false, 
+      "windowPos": [
+        0, 
+        661
+      ], 
+      "animationSpeed": 0.5
+    }, 
+    "mapComplete": false, 
+    "mapMode": 1, 
+    "weatherID": "035r97", 
+    "weatherTime": 1552108080, 
+    "weatherNow": "E:\\SDR\\analytics\\nrsc5\\map\\WeatherMap_035r97_1552108080.png", 
+    "weatherPos": [
+      44.67804, 
+      -76.898, 
+      40.71896, 
+      -71.50811
+    ], 
+    "mapTiles": [
+      [
+        1552108440, 
+        1552113240, 
+        1552113240
+      ], 
+      [
+        1552113240, 
+        1552108440, 
+        1552108440
+      ], 
+      [
+        1552108440, 
+        1552108440, 
+        1552108440
+      ]
+    ]
+  }, 
+  "Width": 491, 
+  "PPMError": 0, 
+  "WindowY": 318, 
+  "WindowX": 1986, 
+  "Stream": 1, 
+  "RTL": 0, 
+  "LogToFile": false, 
+  "CfgVersion": "1.1.0", 
+  "Height": 485, 
+  "Frequency": 99.5, 
+  "Gain": 4.96, 
+  "AutoGain": true, 
+  "Bookmarks": []
+}

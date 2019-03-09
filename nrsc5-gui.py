@@ -19,31 +19,52 @@
 
 #    Updated by zefie for modern nrsc5 ~ 2019
 
-import os, sys, shutil, re, tempfile, md5, gtk, gobject, json, datetime, numpy, glob, time, fnmatch
+import os, sys, shutil, re, gtk, gobject, json, datetime, numpy, glob, time, platform
 from subprocess import Popen, PIPE
 from threading import Timer, Thread
 from dateutil import tz
 from PIL import Image, ImageFont, ImageDraw
 
-# if nrsc5 and sox are not in the system path, set the full path here
-nrsc5Path = "nrsc5"
-soxPath   = "play"
-mapName   = "map.png"
-
 # print debug messages to stdout (if debugger is attached)
 debugMessages = (sys.gettrace() != None)
 debugAutoStart = True
 
+if hasattr(sys, 'frozen'):
+    runtimeDir = os.path.dirname(sys.executable)  # for py2exe
+else:
+    runtimeDir = sys.path[0]
+
+aasDir = os.path.join(runtimeDir, "aas")  # aas (data from nrsc5) file directory
+mapDir = os.path.join(runtimeDir, "map")  # map (data we process) file directory
+resDir = os.path.join(runtimeDir, "res")  # resource (application dependencies) file directory
+cfgDir = os.path.join(runtimeDir, "cfg")  # config file directory
+
+
 class NRSC5_GUI(object):
     def __init__(self):
         gobject.threads_init()
-        
+        self.windowsOS      = False                             # save our determination as a var in case we change how we determine.
+
         self.getControls()              # get controls and windows
         self.initStreamInfo()           # initilize stream info and clear status widgets
-        self.aasDir         = os.path.join(sys.path[0], "aas")    # aas file directory
-        self.mapDir         = os.path.join(sys.path[0], "map")    # map file directory
+
+        self.debugLog("Local path determined as " + runtimeDir)
+
+        if (platform.system() == 'Windows'):
+            # Windows release layout
+            self.windowsOS = True
+            self.binDir = os.path.join(runtimeDir, "bin")  # windows binaries directory
+            self.nrsc5Path = os.path.join(self.binDir,'nrsc5.exe')
+        else:
+            # Linux/Mac/proper posix
+            # if nrsc5 and transcoder are not in the system path, set the full path here
+            self.nrsc5Path = "nrsc5"
+
+        self.debugLog("OS Determination: Windows = {}".format(self.windowsOS))
+
+        self.mapFile        = os.path.join(resDir, "map.png")
+        self.defaultSize    = [490,250] # default width,height of main app
         self.nrsc5          = None      # nrsc5 process
-        self.sox            = None      # sox process
         self.playerThread   = None      # player thread
         self.playing        = False     # currently playing
         self.statusTimer    = None      # status update timer
@@ -140,10 +161,11 @@ class NRSC5_GUI(object):
 
 
     def on_btnPlay_clicked(self, btn):
+        global aasDir
         # start playback
         if (not self.playing):
 
-            self.nrsc5Args = [nrsc5Path, "-o", "-"]
+            self.nrsc5Args = [self.nrsc5Path]
             
             # update all of the spin buttons to prevent the text from sticking 
             self.spinFreq.update()
@@ -153,9 +175,9 @@ class NRSC5_GUI(object):
             self.spinRTL.update()
             
             # enable aas output if temp dir was created
-            if (self.aasDir is not None):
+            if (aasDir is not None):
                 self.nrsc5Args.append("--dump-aas-files")
-                self.nrsc5Args.append(self.aasDir)
+                self.nrsc5Args.append(aasDir)
             
             # set gain if auto gain is not selected
             if (not self.cbAutoGain.get_active()):
@@ -202,7 +224,7 @@ class NRSC5_GUI(object):
             
             if (self.stationLogos.has_key(self.stationStr)):
                 # show station logo if it's cached
-                logo = os.path.join(self.aasDir, self.stationLogos[self.stationStr][self.stationNum])
+                logo = os.path.join(aasDir, self.stationLogos[self.stationStr][self.stationNum])
                 if (os.path.isfile(logo)):
                     self.streamInfo["Logo"] = self.stationLogos[self.stationStr][self.stationNum]
                     self.pixbuf = gtk.gdk.pixbuf_new_from_file(logo)
@@ -231,10 +253,6 @@ class NRSC5_GUI(object):
             # shutdown nrsc5 
             if (self.nrsc5 is not None and not self.nrsc5.poll()):
                 self.nrsc5.terminate()
-            
-            # shutdown sox
-            if (self.sox is not None and not self.sox.poll()):
-                self.sox.terminate()
             
             if (self.playerThread is not None):
                 self.playerThread.join(1)
@@ -337,7 +355,7 @@ class NRSC5_GUI(object):
         about_dialog.set_transient_for(self.mainWindow)
         about_dialog.set_destroy_with_parent(True)
         about_dialog.set_name("NRSC5 GUI")
-        about_dialog.set_version("1.2.0")
+        about_dialog.set_version("1.2.2")
         about_dialog.set_copyright("Copyright \xc2\xa9 2017-2018 Cody Nybo, 2019 zefie")
         about_dialog.set_website("https://github.com/zefie/nrsc5-gui")
         about_dialog.set_comments("A graphical interface for nrsc5.")
@@ -409,10 +427,11 @@ class NRSC5_GUI(object):
             self.btnDelete.set_sensitive(iter is not None)
     
     def on_radMap_toggled(self, btn):
+        global mapDir
         if (btn.get_active()):
             if (btn == self.radMapTraffic):
                 self.mapData["mapMode"] = 0
-                mapFile = os.path.join(self.mapDir, "TrafficMap.png")
+                mapFile = os.path.join(mapDir, "TrafficMap.png")
                 if (os.path.isfile(mapFile)):                                                           # check if map exists
                     mapImg = Image.open(mapFile).resize((200,200), Image.LANCZOS)                       # scale map to fit window
                     self.imgMap.set_from_pixbuf(imgToPixbuf(mapImg))                                    # convert image to pixbuf and display
@@ -439,12 +458,10 @@ class NRSC5_GUI(object):
     
     def play(self):
         FNULL = open(os.devnull, 'w')
-        
+        FTMP = open('tmp.log','w')
+
         # run nrsc5 and output stdout & stderr to pipes
         self.nrsc5 = Popen(self.nrsc5Args, stderr=PIPE, stdout=PIPE, universal_newlines=True)
-        
-        # run sox and read from stdin & output to /dev/null
-        self.sox = Popen([soxPath, "-q -t wav -"], stdin=self.nrsc5.stdout, stderr=FNULL, stdout=FNULL)
         
         while True:
             # read output from nrsc5
@@ -457,24 +474,18 @@ class NRSC5_GUI(object):
                 self.logFile.write(output)
                 self.logFile.flush()
             
-            # check if nrsc5 or sox has exited
+            # check if nrsc5 has exited
             if (self.nrsc5.poll() and not self.playing):
                 # cleanup if shutdown
                 self.debugLog("Process Terminated")
-                self.sox = None
                 self.nrsc5 = None
                 break
             elif (self.nrsc5.poll() and self.playing):
-                # restart nrsc5 and sox if nrsc5 crashes
+                # restart nrsc5 if it crashes
                 self.debugLog("Restarting NRSC5")
+                time.sleep(1)
                 self.nrsc5 = Popen(self.nrsc5Args, stderr=PIPE, stdout=PIPE, universal_newlines=True)
-                self.sox.kill()
-                self.sox = Popen([soxPath, "-"], stdin=self.nrsc5.stdout, stderr=FNULL, stdout=FNULL)
-            elif (self.sox.poll() and self.playing):
-                # restart sox if it crashes
-                self.debugLog("Restarting sox")
-                self.sox = Popen([soxPath, "-"], stdin=self.nrsc5.stdout, stderr=FNULL, stdout=FNULL)
-    
+
     def checkStatus(self):
         # update status information
         def update():
@@ -508,10 +519,10 @@ class NRSC5_GUI(object):
                 # technically we should show the file with the matching lot id
 
                 if (int(self.lastXHDR[1]) > 0 and self.streamInfo["Cover"] != None):
-                    imagePath = os.path.join(self.aasDir, self.streamInfo["Cover"])
+                    imagePath = os.path.join(aasDir, self.streamInfo["Cover"])
                     image = self.streamInfo["Cover"]
                 elif (int(self.lastXHDR[1]) < 0 or self.streamInfo["Cover"] == None):
-                    imagePath = os.path.join(self.aasDir, self.streamInfo["Logo"])
+                    imagePath = os.path.join(aasDir, self.streamInfo["Logo"])
                     image = self.streamInfo["Logo"]
                     if (not os.path.isfile(imagePath)):
                         self.imgCover.clear()
@@ -531,6 +542,7 @@ class NRSC5_GUI(object):
             self.statusTimer.start()
     
     def processTrafficMap(self, fileName):
+        global aasDir, mapDir
         r = re.compile("^[\d]+_TMT_.*_([1-3])_([1-3])_([\d]{4})([\d]{2})([\d]{2})_([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})_([0-9A-Fa-f]{4})\..*$")     # match file name
         m = r.match(fileName)
         
@@ -546,7 +558,7 @@ class NRSC5_GUI(object):
             # check if the tile has already been loaded
             if (self.mapData["mapTiles"][x][y] == ts):
                 try:
-                    os.remove(os.path.join(self.aasDir, fileName))                                            # delete this tile, it's not needed
+                    os.remove(os.path.join(aasDir, fileName))                                            # delete this tile, it's not needed
                 except:
                     pass
                 return                                                                                  # no need to recreate the map if it hasn't changed
@@ -557,8 +569,8 @@ class NRSC5_GUI(object):
             self.mapData["mapTiles"][x][y] = ts                                                         # store time for current tile
             
             try:
-                currentPath = os.path.join(self.aasDir,fileName)
-                newPath = os.path.join(self.mapDir, "TrafficMap_{:g}_{:g}.png".format(x,y))                   # create path to new tile location
+                currentPath = os.path.join(aasDir,fileName)
+                newPath = os.path.join(mapDir, "TrafficMap_{:g}_{:g}.png".format(x,y))                   # create path to new tile location
                 if(os.path.exists(newPath)): os.remove(newPath)                                         # delete old image if it exists (only necessary on windows)
                 shutil.move(currentPath, newPath)                                                       # move and rename map tile
             except:
@@ -574,11 +586,11 @@ class NRSC5_GUI(object):
                 imgMap = Image.new("RGB", (600, 600), "white")                                          # create blank image for traffic map
                 for i in range(0,3):
                     for j in range(0,3):
-                        tileFile = os.path.join(self.mapDir, "TrafficMap_{:g}_{:g}.png".format(i,j))          # get path to tile
+                        tileFile = os.path.join(mapDir, "TrafficMap_{:g}_{:g}.png".format(i,j))          # get path to tile
                         imgMap.paste(Image.open(tileFile), (j*200, i*200))                              # paste tile into map
                         os.remove(tileFile)                                                             # delete tile image
                 
-                imgMap.save(os.path.join(self.mapDir, "TrafficMap.png"))                                      # save traffic map
+                imgMap.save(os.path.join(mapDir, "TrafficMap.png"))                                      # save traffic map
                 
                 # display on map page
                 if (self.radMapTraffic.get_active()):
@@ -588,6 +600,7 @@ class NRSC5_GUI(object):
                 if (self.mapViewer is not None): self.mapViewer.updated(0)                              # notify map viwerer if it's open
     
     def processWeatherOverlay(self, fileName):
+        global mapDir
         r = re.compile("^[\d]+_DWRO_(.*)_.*_([\d]{4})([\d]{2})([\d]{2})_([\d]{2})([\d]{2})_([0-9A-Fa-f]+)\..*$")                    # match file name
         m = r.match(fileName)
         
@@ -607,7 +620,7 @@ class NRSC5_GUI(object):
             
             if (self.mapData["weatherTime"] == ts):
                 try:
-                    os.remove(os.path.join(self.aasDir, fileName))                                            # delete this tile, it's not needed
+                    os.remove(os.path.join(aasDir, fileName))                                            # delete this tile, it's not needed
                 except:
                     pass
                 return                                                                                  # no need to recreate the map if it hasn't changed
@@ -615,20 +628,20 @@ class NRSC5_GUI(object):
             self.debugLog("Got Weather Overlay")
             
             self.mapData["weatherTime"] = ts                                                            # store time for current overlay
-            wxOlPath  = os.path.join(self.mapDir,"WeatherOverlay_{:s}_{:}.png".format(id, ts))
-            wxMapPath = os.path.join(self.mapDir,"WeatherMap_{:s}_{:}.png".format(id, ts))
+            wxOlPath  = os.path.join(mapDir,"WeatherOverlay_{:s}_{:}.png".format(id, ts))
+            wxMapPath = os.path.join(mapDir,"WeatherMap_{:s}_{:}.png".format(id, ts))
             
             # move new overlay to map directory
             try:
                 if(os.path.exists(wxOlPath)): os.remove(wxOlPath)                                       # delete old image if it exists (only necessary on windows)
-                shutil.move(os.path.join(self.aasDir, fileName), wxOlPath)                                    # move and rename map tile
+                shutil.move(os.path.join(aasDir, fileName), wxOlPath)                                    # move and rename map tile
             except:
                 self.debugLog("Error moving weather overlay", True)
                 self.mapData["weatherTime"] = 0
                 
             # create weather map
             try:
-                mapPath = os.path.join(self.mapDir, "BaseMap_" + id + ".png")                                 # get path to base map
+                mapPath = os.path.join(mapDir, "BaseMap_" + id + ".png")                                 # get path to base map
                 if (os.path.isfile(mapPath) == False):                                                  # make sure base map exists
                     self.makeBaseMap(self.mapData["weatherID"], self.mapData["weatherPos"])             # create base map if it doesn't exist
                 
@@ -656,11 +669,12 @@ class NRSC5_GUI(object):
                 self.mapData["weatherTime"] = 0
             
     def proccessWeatherInfo(self, fileName):
+        global aasDir
         weatherID = None
         weatherPos = None
 
         try:
-            with open(os.path.join(self.aasDir, fileName)) as weatherInfo:                              # open weather info file
+            with open(os.path.join(aasDir, fileName)) as weatherInfo:                              # open weather info file
                 for line in weatherInfo:                                                                # read line by line
                     if ("DWR_Area_ID=" in line):                                                        # look for line with "DWR_Area_ID=" in it
                         # get ID from line
@@ -687,10 +701,11 @@ class NRSC5_GUI(object):
                 self.proccessWeatherMaps()
     
     def proccessWeatherMaps(self):
+        global mapDir
         numberOfMaps = 0
         r     = re.compile("^map.WeatherMap_([a-zA-Z0-9]+)_([0-9]+).png")
         now   = dtToTs(datetime.datetime.now(tz.tzutc()))                                               # get current time
-        files = glob.glob(os.path.join(self.mapDir, "WeatherMap_") + "*.png")                                 # look for weather map files
+        files = glob.glob(os.path.join(mapDir, "WeatherMap_") + "*.png")                                 # look for weather map files
         files.sort()                                                                                    # sort files
         for f in files:  
             m = r.match(f)                                                                              # match regex
@@ -731,16 +746,17 @@ class NRSC5_GUI(object):
         return (int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
     
     def makeBaseMap(self, id, pos):
-        mapPath = os.path.join(self.mapDir, "BaseMap_" + id + ".png")                                 # get map path
-        if (os.path.isfile(mapName)):
+        global mapDir
+        mapPath = os.path.join(mapDir, "BaseMap_" + id + ".png")                                 # get map path
+        if (os.path.isfile(self.mapFile)):
             if (os.path.isfile(mapPath) == False):                                              # check if the map has already been created for this location
                 self.debugLog("Creating new map: " + mapPath)
                 px     = self.getMapArea(*pos)                                                  # convert map locations to pixel coordinates        
-                mapImg = Image.open(mapName).crop(px)                                           # open the full map and crop it to the coordinates
+                mapImg = Image.open(self.mapFile).crop(px)                                           # open the full map and crop it to the coordinates
                 mapImg.save(mapPath)                                                            # save the cropped map to disk for later use
                 self.debugLog("Finished creating map")
         else:
-            self.debugLog("Error map file not found: " + mapName, True)
+            self.debugLog("Error map file not found: " + self.mapFile, True)
             mapImg = Image.new("RGBA", (pos[2]-pos[1], pos[3]-pos[1]), "white")                 # if the full map is not available, use a blank image
             mapImg.save(mapPath)
     
@@ -758,12 +774,13 @@ class NRSC5_GUI(object):
         text  = "{:04g}-{:02g}-{:02g} {:02g}:{:02g}".format(t.year, t.month, t.day, t.hour, t.minute)   # format timestamp
         imgTS = Image.new("RGBA", size, (0,0,0,0))                                                      # create a blank image
         draw  = ImageDraw.Draw(imgTS)                                                                   # the drawing object
-        font  = ImageFont.truetype("DejaVuSansMono.ttf", 24)                                            # DejaVu Sans Mono 24pt font
+        font  = ImageFont.truetype(os.path.join(resDir,"DejaVuSansMono.ttf"), 24)                  # DejaVu Sans Mono 24pt font
         draw.rectangle((x,y, x+231,y+25), outline="black", fill=(128,128,128,96))                       # draw a box around the text
         draw.text((x+3,y), text, fill="black", font=font)                                               # draw the text
         return imgTS                                                                                    # return the image
 
     def parseFeedback(self, line):
+        global aasDir, mapDir
         if (self.regex[4].match(line)):
             # match title
             m = self.regex[4].match(line)
@@ -807,10 +824,10 @@ class NRSC5_GUI(object):
                 p = int(m.group(1),16)
 
                 # check file existance and size .. right now we just debug log
-                if (not os.path.isfile(os.path.join(self.aasDir,fileName))):
+                if (not os.path.isfile(os.path.join(aasDir,fileName))):
                     self.debugLog("Missing file: " + fileName)
                 else:
-                    actualFileSize = os.path.getsize(os.path.join(self.aasDir,fileName))
+                    actualFileSize = os.path.getsize(os.path.join(aasDir,fileName))
                     if (fileSize != actualFileSize):
                         self.debugLog("Corrupt file: " + fileName + " (expected: "+fileSize+" bytes, got "+actualFileSize+" bytes)")
 
@@ -824,11 +841,11 @@ class NRSC5_GUI(object):
                     self.stationLogos[self.stationStr][self.stationNum] = fileName    # add station logo to database
                     self.debugLog("Got Station Logo: " + fileName)
 
-                elif(fileName[headerOffset:(5+headerOffset)] == "DWRO_" and self.mapDir is not None):
+                elif(fileName[headerOffset:(5+headerOffset)] == "DWRO_" and mapDir is not None):
                     self.processWeatherOverlay(fileName)
-                elif(fileName[headerOffset:(4+headerOffset)] == "TMT_" and self.mapDir is not None):
+                elif(fileName[headerOffset:(4+headerOffset)] == "TMT_" and mapDir is not None):
                     self.processTrafficMap(fileName)                                  # proccess traffic map tile
-                elif(fileName[headerOffset:(5+headerOffset)] == "DWRI_" and self.mapDir is not None):
+                elif(fileName[headerOffset:(5+headerOffset)] == "DWRI_" and mapDir is not None):
                     self.proccessWeatherInfo(fileName)
 
         elif (self.regex[0].match(line)):
@@ -863,9 +880,10 @@ class NRSC5_GUI(object):
                 self.streams[self.numStreams-1].append(p)
 
     def getControls(self):
+        global resDir
         # setup gui
         builder = gtk.Builder()
-        builder.add_from_file("mainForm.glade")
+        builder.add_from_file(os.path.join(resDir,"mainForm.glade"))
         builder.connect_signals(self)
         
         # Windows
@@ -954,16 +972,20 @@ class NRSC5_GUI(object):
         self.lblBerMax.set_label("")
     
     def loadSettings(self):
+        global aasDir, cfgDir, mapDir
+
         # load station logos
         try:
-            with open("stationLogos.json", mode='r') as f:
+            with open(os.path.join(cfgDir,"stationLogos.json"), mode='r') as f:
                 self.stationLogos = json.load(f)
         except:
             self.debugLog("Error: Unable to load station logo database", True)
-       
+
+        self.mainWindow.resize(self.defaultSize[0],self.defaultSize[1])
+
         # load settings
         try:
-            with open("config.json", mode='r') as f:
+            with open(os.path.join(cfgDir,"config.json"), mode='r') as f:
                 config = json.load(f)
                 
                 if "MapData" in config:
@@ -977,7 +999,9 @@ class NRSC5_GUI(object):
                 
                 if "Width" and "Height" in config:
                     self.mainWindow.resize(config["Width"],config["Height"])
-                
+                else:
+                    self.mainWindow.resize(self.defaultSize)
+
                 self.mainWindow.move(config["WindowX"], config["WindowY"])
                 self.spinFreq.set_value(config["Frequency"])
                 self.spinStream.set_value(config["Stream"])
@@ -993,20 +1017,20 @@ class NRSC5_GUI(object):
             self.debugLog("Error: Unable to load config", True)
         
         # create aas directory
-        if (not os.path.isdir(self.aasDir)):
+        if (not os.path.isdir(aasDir)):
             try:
-                os.mkdir(self.aasDir)
+                os.mkdir(aasDir)
             except:
                 self.debugLog("Error: Unable to create AAS directory", True)
-                self.aasDir = None
+                aasDir = None
         
         # create map directory
-        if (not os.path.isdir(self.mapDir)):
+        if (not os.path.isdir(mapDir)):
             try:
-                os.mkdir(self.mapDir)
+                os.mkdir(mapDir)
             except:
                 self.debugLog("Error: Unable to create Map directory", True)
-                self.mapDir = None
+                mapDir = None
         
         # open log file
         try:
@@ -1032,11 +1056,7 @@ class NRSC5_GUI(object):
         if (self.nrsc5 is not None and not self.nrsc5.poll()):
             self.nrsc5.kill()
         
-        # kill sox if it's running
-        if (self.sox is not None and not self.sox.poll()):
-            self.sox.kill()
-        
-        # shut down status timer if it's running    
+        # shut down status timer if it's running
         if (self.statusTimer is not None):
             self.statusTimer.cancel()
         
@@ -1050,7 +1070,7 @@ class NRSC5_GUI(object):
         
         # save settings
         try:
-            with open("config.json", mode='w') as f:
+            with open(os.path.join(cfgDir,"config.json"), mode='w') as f:
                 winX, winY = self.mainWindow.get_position()
                 width, height = self.mainWindow.get_size()
                 config = {
@@ -1074,7 +1094,7 @@ class NRSC5_GUI(object):
                 
                 json.dump(config, f, indent=2)
             
-            with open("stationLogos.json", mode='w') as f:
+            with open(os.path.join(cfgDir,"stationLogos.json"), mode='w') as f:
                 json.dump(self.stationLogos, f, indent=2)
         except:
             self.debugLog("Error: Unable to save config", True)
@@ -1088,8 +1108,7 @@ class NRSC5_Map(object):
     def __init__(self, parent, callback, data):
         # setup gui
         builder = gtk.Builder()
-        builder.add_from_file("mapForm.glade")
-        builder.connect_signals(self)
+        builder.add_from_file(os.path.join(resDir,"mapForm.glade"))
         
         self.parent         = parent                                                # parent class
         self.callback       = callback                                              # callback function
@@ -1232,7 +1251,7 @@ class NRSC5_Map(object):
             self.imgMap.set_from_stock(gtk.STOCK_MISSING_IMAGE, gtk.ICON_SIZE_LARGE_TOOLBAR)            # display missing image if file is not found
     
     def setMap(self, map):
-        if (map == 0):  self.showImage(os.path.join(self.mapDir, "TrafficMap.png"), False)                    # show traffic map
+        if (map == 0):  self.showImage(os.path.join(mapDir, "TrafficMap.png"), False)                    # show traffic map
         elif (map == 1):self.showImage(self.data["weatherNow"], self.config["scale"])                   # show weather map
     
     def updated(self, imageType):
@@ -1258,7 +1277,6 @@ def imgToPixbuf(img):
 
 if __name__ == "__main__":
     # show main window and start main thread
-    os.chdir(sys.path[0])
     nrsc5_gui = NRSC5_GUI()
     nrsc5_gui.mainWindow.show()
     if (debugMessages and debugAutoStart):
