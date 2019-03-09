@@ -1,5 +1,7 @@
 aas/*
 map/*
-nrsc5.log
-config.json
-stationLogos.json
+cfg/stationLogos.json
+dist
+build
+*.log
+.idea
